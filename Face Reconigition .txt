@@ -1,0 +1,174 @@
+import numpy as np 
+import matplotlib.pyplot as plt 
+import seaborn as sb 
+from PIL import Image 
+
+from sklearn import metrics 
+
+import cv2 
+import os 
+
+from glob import glob 
+
+import tensorflow as tf 
+from tensorflow import keras 
+from keras import layers 
+from keras.preprocessing.image import ImageDataGenerator 
+
+import warnings 
+warnings.filterwarnings('ignore')
+
+
+##Importing Dataset
+# Extracting the compressed dataset. 
+from zipfile import ZipFile 
+data_path = 'fer2013.zip'
+  
+with ZipFile(data_path,'r') as zip: 
+  zip.extractall() 
+  print('The data set has been extracted.')
+
+##Data Exploration
+
+
+path = 'train'
+classes = os.listdir(path) 
+classes
+
+
+count = [] 
+for cat in classes: 
+    count.append(len(os.listdir(f'{path}/{cat}'))) 
+sb.barplot(classes, count) 
+plt.show()
+
+##Model Development
+
+train_datagen = ImageDataGenerator(rescale=1./255) 
+val_datagen = ImageDataGenerator(rescale=1./255) 
+
+train_gen = train_datagen.flow_from_directory( 
+		'train', 
+		target_size=(48,48), 
+		batch_size=64, 
+		color_mode="grayscale", 
+		class_mode='categorical') 
+
+val_gen = val_datagen.flow_from_directory( 
+		'test', 
+		target_size=(48,48), 
+		batch_size=64, 
+		color_mode="grayscale", 
+		class_mode='categorical')
+
+
+emotions = list(train_gen.class_indices.keys())
+
+model = keras.models.Sequential([ 
+									layers.Conv2D(32,(3,3),activation='relu',input_shape=(48, 48, 1)),									 
+									layers.Conv2D(64,(3,3),activation='relu'), 
+									layers.MaxPooling2D(2,2), 
+								
+									
+									layers.Flatten(), 
+									layers.Dense(64,activation='relu'), 
+									layers.BatchNormalization(),								 
+									layers.Dense(32,activation='relu'), 
+									layers.Dropout(0.3), 
+									layers.BatchNormalization(), 
+									layers.Dense(7, activation='softmax') 
+])
+
+model.compile( 
+	optimizer = 'adam', 
+	loss = 'categorical_crossentropy', 
+	metrics=['accuracy'] 
+)
+
+from keras.callbacks import EarlyStopping, ReduceLROnPlateau 
+
+class myCallback(tf.keras.callbacks.Callback): 
+def on_epoch_end(self, epoch, logs={}): 
+	if logs.get('val_accuracy') > 0.90: 
+	print('\n Validation accuracy has reached upto 90% so, stopping further training.') 
+	self.model.stop_training = True
+
+es = EarlyStopping(patience=3, monitor='val_accuracy', restore_best_weights=True) 
+lr = ReduceLROnPlateau(monitor = 'val_loss', patience = 2, factor=0.5, verbose=1)
+
+history = model.fit(train_gen, 
+					validation_data = val_gen, 
+					epochs = 5, 
+					verbose = 1, 
+					callbacks = [es, lr, myCallback()])
+
+
+##Predicting Emoji in Real Time
+
+def plot_image(img, emoj): 
+	wmin = 256
+	hmin = 256
+
+	emoj = cv2.resize(emoj, (wmin, hmin)) 
+	img = cv2.resize(img, (wmin, hmin)) 
+	cv2.imshow('Images', cv2.hconcat([img, emoj]))
+
+face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml') 
+
+img = cv2.imread('sad.jpg') 
+gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) 
+faces = face_cascade.detectMultiScale(gray) 
+
+for (x, y, w, h) in faces: 
+	gray = cv2.resize(gray[x:x+w-10,y:y+h+10], (48,48)) 
+	gray = np.expand_dims(gray, axis=-1) 
+	gray = np.expand_dims(gray, axis=0) 
+
+	pred = model.predict(gray) 
+	idx = pred.argmax(axis=-1)[0] 
+
+	emoj = cv2.imread(f'emojis/{classes[idx]}.jpg') 
+
+	plot_image(img, emoj) 
+
+	if cv2.waitKey(1) & 0xFF == ord('q'): 
+		break
+	
+cv2.destroyAllWindows()
+
+face_cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml') 
+
+cap = cv2.VideoCapture(0) 
+
+
+while(True): 
+	ret, img = cap.read() 
+	img = cv2.resize(img, (256, 256)) 
+	gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) 
+	faces = face_cascade.detectMultiScale(gray) 
+
+	if len(faces)>0: 
+		for (x, y, w, h) in faces: 
+			try: 
+				gray = cv2.resize(gray[x:x+w,y:y+h], (48,48)) 
+			except: 
+				break
+			
+			gray = np.expand_dims(gray, axis=-1) 
+			gray = np.expand_dims(gray, axis=0) 
+
+			pred = model.predict(gray) 
+			idx = pred.argmax(axis=-1)[0] 
+
+			emoj = cv2.imread(f'emojis/{emotions[idx]}.jpg') 
+
+			plot_image(img, emoj) 
+	else: 
+		emoj = cv2.imread('NofaceDetected.jpeg') 
+		plot_image(img, emoj) 
+
+	if cv2.waitKey(10) & 0xFF == ord('q'): 
+		break
+	
+cap.release() 
+cv2.destroyAllWindows()
